@@ -1,0 +1,31 @@
+# ~/.config/systemd/user/signal-cli.service
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now signal-cli.service
+#
+# Edit ExecStart: replace +15555550123 with your number, and check the
+# signal-cli path (`which signal-cli`).
+
+[Unit]
+Description=signal-cli JSON-RPC daemon (linked secondary device)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p %h/.local/share/signal-cli
+ExecStart=/usr/local/bin/signal-cli -a +15555550123 daemon \
+    --socket %h/.local/share/signal-cli/socket \
+    --receive-mode on-start
+Restart=always
+RestartSec=5
+
+# The websocket can die silently; the bot's heartbeat restarts this unit when
+# that happens. Do not rate-limit those restarts into a refusal to start.
+StartLimitIntervalSec=0
+
+# signal-cli's data directory holds your linked-device identity keys.
+UMask=0077
+
+[Install]
+WantedBy=default.target

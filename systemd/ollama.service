@@ -1,0 +1,29 @@
+# ~/.config/systemd/user/ollama.service
+#
+# Only needed if you are NOT using the system-wide ollama.service that the
+# official installer sets up. If `systemctl status ollama` already shows the
+# system unit running, skip this file entirely.
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ollama.service
+
+[Unit]
+Description=Ollama local LLM server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ollama serve
+Restart=always
+RestartSec=5
+
+# Keep the model resident in VRAM. Without this the first message after an
+# idle period pays a full model load.
+Environment=OLLAMA_KEEP_ALIVE=-1
+Environment=OLLAMA_HOST=127.0.0.1:11434
+# Only one model in VRAM at a time on an 8GB (or 6GB) card.
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+
+[Install]
+WantedBy=default.target

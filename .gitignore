@@ -1,0 +1,165 @@
+# ---------------------------------------------------------------------------
+# SECRETS — nothing in this section may ever be committed.
+# ---------------------------------------------------------------------------
+
+# Environment files
+.env
+.env.*
+!.env.example
+*.env
+!example.env
+
+# Real config (config.example.toml IS committed; config.toml is NOT)
+config.toml
+config.*.toml
+!config.example.toml
+/config/
+
+# Google OAuth: client secrets, downloaded credentials, minted tokens
+client_secret*.json
+client_secrets*.json
+credentials.json
+token.json
+token.pickle
+*token*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+service-account*.json
+*-service-account.json
+gcp-*.json
+
+# Generic key / certificate material
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+*.asc
+*.gpg
+*.kdbx
+id_rsa*
+id_ed25519*
+*.ppk
+secrets/
+secrets.*
+.secrets/
+
+# signal-cli account state (contains your linked-device identity keys —
+# leaking this is equivalent to leaking your Signal account)
+.local/share/signal-cli/
+signal-cli-data/
+signal-cli-config/
+data/signal-cli/
+*.d/identities/
+
+# Runtime data: sqlite dedupe/confirmation store, logs, caches
+/var/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+logs/
+*.log
+*.log.*
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+pyvenv.cfg
+
+# Test / type / lint caches
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+nosetests.xml
+*.cover
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+.pdm-python
+
+# Packaging / dependency managers
+pip-log.txt
+pip-delete-this-directory.txt
+poetry.toml
+.pdm.toml
+__pypackages__/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+.directory
+.fuse_hidden*
+.nfs*
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+*.tmp
+*.temp
+tmp/
+scratch/
+node_modules/
