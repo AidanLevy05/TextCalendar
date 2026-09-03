@@ -1,0 +1,35 @@
+# ~/.config/systemd/user/signal-calendar-bot.service
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now signal-calendar-bot.service
+#   journalctl --user -u signal-calendar-bot -f
+#
+# Edit WorkingDirectory and ExecStart to match where you cloned the repo.
+
+[Unit]
+Description=Signal Calendar Agent
+After=network-online.target signal-cli.service
+Wants=network-online.target
+Requires=signal-cli.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/TextCalendar
+Environment=SCB_CONFIG=%h/.config/signal-calendar-bot/config.toml
+ExecStart=%h/TextCalendar/.venv/bin/python -m signal_calendar_bot run
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# Token and config files are written 0600; keep anything else it creates private.
+UMask=0077
+
+# Modest hardening. The bot needs network access (Google) and its own data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/signal-calendar-bot %h/.config/signal-calendar-bot
+
+[Install]
+WantedBy=default.target

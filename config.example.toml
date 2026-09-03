@@ -1,0 +1,130 @@
+# ---------------------------------------------------------------------------
+# signal-calendar-bot configuration
+#
+# Copy to config.toml and edit. config.toml is gitignored.
+#   cp config.example.toml config.toml
+#   chmod 600 config.toml
+#
+# Every value here can be overridden by an environment variable named
+# SCB_<SECTION>_<KEY> (uppercase), e.g. SCB_OLLAMA_MODEL=qwen3:4b.
+# Nothing in the codebase is hardcoded to a particular machine.
+# ---------------------------------------------------------------------------
+
+[general]
+# IANA timezone used for all user-facing times. Internals are always UTC.
+timezone = "America/New_York"
+# Directory for the sqlite store, token cache, and anything else runtime.
+# Supports ~ and $VARS. Created at startup with mode 0700.
+data_dir = "~/.local/share/signal-calendar-bot"
+
+[logging]
+level = "INFO"                                   # DEBUG | INFO | WARNING | ERROR
+file = "~/.local/share/signal-calendar-bot/bot.log"
+# JSON lines when true (grep-able audit trail), human text when false.
+json = true
+max_bytes = 10_485_760
+backup_count = 5
+
+[signal]
+# signal-cli daemon JSON-RPC endpoint. Two transports are supported:
+#   "unix"  -> unix socket at socket_path  (recommended, no TCP exposure)
+#   "tcp"   -> host:port
+transport = "unix"
+socket_path = "~/.local/share/signal-cli/socket"
+host = "127.0.0.1"
+port = 7583
+# Your own Signal number in E.164. This is BOTH the account the linked
+# device belongs to and the only sender whose messages are processed.
+account = "+15555550123"
+# Sender allowlist. Anything not in this list is dropped and logged.
+# Normally just your own number (Note to Self arrives from yourself).
+allowed_senders = ["+15555550123"]
+# Only process Note to Self (message where source == destination == account).
+note_to_self_only = true
+
+[ollama]
+host = "http://127.0.0.1:11434"
+# Swap this one value to move between machines. 8GB VRAM (RTX 4060) fits
+# qwen3:8b comfortably; 6GB (RTX 2060) wants qwen3:4b or llama3.1:8b-q4.
+model = "qwen3:8b"
+num_ctx = 8192
+temperature = 0.0
+# Seconds to wait on a generation before giving up.
+timeout_seconds = 90
+# Keep the model resident. Mirrors OLLAMA_KEEP_ALIVE=-1 per request.
+keep_alive = "-1"
+
+[google]
+# Path to the OAuth *client secret* JSON you download from Google Cloud.
+client_secret_file = "~/.config/signal-calendar-bot/client_secret.json"
+# Where the minted refresh token is cached. Written with mode 0600.
+token_file = "~/.config/signal-calendar-bot/token.json"
+calendar_id = "primary"
+# Port the one-time desktop OAuth flow listens on for the redirect.
+oauth_local_port = 8765
+
+[confirmation]
+# Writes always preview first. You have this many seconds to reply "yes".
+# After it lapses the proposal is destroyed — nothing is written, and you
+# must send the original request again. A stale "yes" can never fire.
+timeout_seconds = 60
+# Send an explicit "that expired" message when a proposal lapses.
+notify_on_expiry = true
+# Words accepted as confirmation / cancellation (case-insensitive, exact match
+# after stripping punctuation).
+affirmatives = ["yes", "y", "yeah", "yep", "ok", "okay", "confirm", "do it", "go", "1"]
+negatives = ["no", "n", "nope", "cancel", "stop", "nevermind", "never mind", "abort"]
+
+[scheduling]
+# The model never sees these. Code applies them when generating slots.
+day_start = "09:00"
+day_end = "21:00"
+# Minutes of protected space either side of an existing event.
+buffer_minutes = 15
+# Granularity of proposed start times, in minutes.
+slot_granularity_minutes = 15
+# How many candidate slots to offer.
+max_candidates = 3
+# How far ahead a bare request may search, in days.
+max_search_days = 14
+
+[scheduling.default_durations]
+# Keyword -> minutes. Matched case-insensitively against the event title
+# when the model does not supply a duration.
+lunch = 60
+dinner = 90
+breakfast = 45
+coffee = 30
+call = 30
+meeting = 60
+sync = 30
+standup = 15
+gym = 90
+workout = 90
+appointment = 60
+_default = 60
+
+# Recurring blocks that are never scheduled over. Repeat this table as needed.
+[[scheduling.protected_blocks]]
+name = "Jiu-jitsu"
+days = ["mon", "wed", "fri"]
+start = "18:30"
+end = "20:00"
+
+[[scheduling.protected_blocks]]
+name = "Class"
+days = ["tue", "thu"]
+start = "14:00"
+end = "16:00"
+
+[heartbeat]
+# signal-cli's websocket can die quietly while the process stays alive.
+# The daemon sends itself a ping via Note to Self and expects it back.
+enabled = true
+interval_seconds = 900
+# How long to wait for the ping to come back before declaring the link dead.
+timeout_seconds = 60
+# Command run when the link is judged dead. Set to "" to only log.
+restart_command = "systemctl --user restart signal-cli.service"
+# Consecutive misses tolerated before the restart command fires.
+max_missed = 2
