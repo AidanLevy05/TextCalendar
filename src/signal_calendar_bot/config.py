@@ -107,13 +107,60 @@ class SignalConfig(BaseModel):
         return expand(self.socket_path)
 
 
-class OllamaConfig(BaseModel):
-    host: str = "http://127.0.0.1:11434"
-    model: str = "qwen3:8b"
-    num_ctx: int = 8192
-    temperature: float = 0.0
-    timeout_seconds: float = 90.0
-    keep_alive: str = "-1"
+class AnthropicConfig(BaseModel):
+    """Claude API settings.
+
+    The API key deliberately does NOT live in this file. It is read from the
+    ANTHROPIC_API_KEY environment variable, or from `api_key_file` (a file
+    containing nothing but the key). Keeping it out of config.toml means the
+    config can be copied, diffed, and pasted into a bug report safely.
+
+    Note there is no `temperature` here, and there must never be: Claude Sonnet 5
+    rejects `temperature`, `top_p`, and `top_k` with a 400.
+    """
+
+    model: str = "claude-sonnet-5"
+    # Thinking depth / token spend: low | medium | high | xhigh | max.
+    # Used for intent parsing, the one call where being wrong actually costs
+    # something.
+    effort: str = "medium"
+    # Phrasing is cosmetic - every fact it is given was already computed by
+    # code - so it runs cheaper.
+    phrase_effort: str = "low"
+    max_tokens: int = 2048
+    phrase_max_tokens: int = 512
+    timeout_seconds: float = 60.0
+    max_retries: int = 2
+    # Optional fallback when ANTHROPIC_API_KEY is not in the environment.
+    api_key_file: str = "~/.config/signal-calendar-bot/anthropic_api_key"
+
+    @field_validator("effort", "phrase_effort")
+    @classmethod
+    def _known_effort(cls, v: str) -> str:
+        allowed = {"low", "medium", "high", "xhigh", "max"}
+        if v not in allowed:
+            raise ValueError(f"effort must be one of {sorted(allowed)}, got {v!r}")
+        return v
+
+    @property
+    def api_key_path(self) -> Path:
+        return expand(self.api_key_file)
+
+    def resolve_api_key(self) -> str | None:
+        """Find the API key. Environment first, then the key file.
+
+        Returns None rather than raising so `doctor` can report the problem
+        instead of crashing.
+        """
+        from_env = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if from_env:
+            return from_env
+        path = self.api_key_path
+        if path.is_file():
+            key = path.read_text(encoding="utf-8").strip()
+            if key:
+                return key
+        return None
 
 
 class GoogleConfig(BaseModel):
@@ -242,7 +289,7 @@ class Config(BaseModel):
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     signal: SignalConfig = Field(default_factory=SignalConfig)
-    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
     google: GoogleConfig = Field(default_factory=GoogleConfig)
     confirmation: ConfirmationConfig = Field(default_factory=ConfirmationConfig)
     scheduling: SchedulingConfig = Field(default_factory=SchedulingConfig)

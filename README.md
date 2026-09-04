@@ -4,15 +4,21 @@ Manage your Google Calendar by texting Signal. Send "lunch with Dan Thursday" to
 your own Note to Self; the bot finds an open slot, proposes it, and creates the
 event **only** if you confirm within 60 seconds.
 
-All LLM inference is local (Ollama). No calendar data leaves the machine.
+Language is handled by **Claude Sonnet 5** at medium effort. Scheduling is not —
+see the design rule below.
 
 ```
 Signal (phone) → Note to Self → signal-cli daemon (JSON-RPC)
                                         ↓
                               Python daemon (this repo)
                                    ↙         ↘
-                          Ollama (local)   Google Calendar API
+                     Claude API (Sonnet 5)   Google Calendar API
 ```
+
+> **Privacy.** Event titles and times are sent to Anthropic's API to be parsed
+> and phrased. Availability lookups use Google's freebusy endpoint, so other
+> people's event details never enter the process — but your own titles do leave
+> the machine.
 
 ## Core design rule
 
@@ -22,7 +28,12 @@ The LLM has exactly two jobs: turn a text message into a validated JSON intent,
 and phrase pre-computed results in natural language. It never does date
 arithmetic, never decides whether two events conflict, and never picks a time
 slot. All of that is deterministic Python in `scheduling.py`, unit-tested
-without Ollama or Google running.
+without the API or Google running.
+
+Structured outputs constrain the model to a fixed schema, and the strict pydantic
+union in `models.py` then enforces the rules on top — a `create` needs a title, a
+window has to end after it starts. Shape is guaranteed by the API; meaning is
+guaranteed by our own code.
 
 ## The confirmation window
 
@@ -65,14 +76,14 @@ pip install -e .
 cp config.example.toml config.toml && chmod 600 config.toml
 $EDITOR config.toml          # set signal.account to your number
 
-# See docs/SETUP.md for keys, signal-cli linking, and Ollama.
+# See docs/SETUP.md for the API key, signal-cli linking, and Google OAuth.
 python -m signal_calendar_bot doctor
 python -m signal_calendar_bot run
 ```
 
-**`doctor` is the command to trust.** It checks config, file permissions,
-Ollama reachability, the configured model, the signal-cli socket, and a live
-Google freebusy query, and tells you exactly what is missing.
+**`doctor` is the command to trust.** It checks config, file permissions, the
+Anthropic key (and where it came from), the configured model, the signal-cli
+socket, and a live Google freebusy query, and tells you exactly what is missing.
 
 ## Setup
 
@@ -91,20 +102,25 @@ the exact file it goes in. Start there.
 
 ## Nothing is hardcoded to one machine
 
-Model name, `num_ctx`, Ollama host, data paths, timezone, scheduling rules, and
-the allowlist all come from `config.toml`. Moving from the Legion (RTX 4060,
-8GB) to the MSI box (RTX 2060, 6GB) means changing one value:
+Model, effort, data paths, timezone, scheduling rules, and the allowlist all come
+from `config.toml`. Since inference is now an API call rather than local GPU work,
+moving from the Legion to the headless MSI box needs no model change at all — the
+box only has to reach the network.
 
 ```toml
-[ollama]
-model = "qwen3:4b"    # was qwen3:8b
+[anthropic]
+model  = "claude-sonnet-5"
+effort = "medium"        # low | medium | high | xhigh | max
 ```
 
 Every setting also accepts an environment override, `SCB_<SECTION>_<KEY>`:
 
 ```bash
-SCB_OLLAMA_MODEL=qwen3:4b SCB_CONFIRMATION_TIMEOUT_SECONDS=90 python -m signal_calendar_bot run
+SCB_ANTHROPIC_EFFORT=high SCB_CONFIRMATION_TIMEOUT_SECONDS=90 python -m signal_calendar_bot run
 ```
+
+The API key is **not** a config value — it comes from `ANTHROPIC_API_KEY` or a
+`0600` key file. See [docs/SETUP.md](docs/SETUP.md) part 2.
 
 ## Safety properties
 
@@ -129,7 +145,8 @@ These are invariants, not conventions, and each has tests:
 
 ## Reliability
 
-Three systemd user units with `Restart=always` (see `systemd/`).
+Two systemd user units with `Restart=always` (see `systemd/`). The Ollama unit
+is gone — there is no local model to keep resident any more.
 
 The failure mode that matters: signal-cli's websocket can die silently while the
 process stays alive, so the unit looks healthy while receiving nothing forever.
@@ -151,12 +168,13 @@ grep '"cid":"a1b2c3d4e5f6"' ~/.local/share/signal-calendar-bot/bot.log | jq .
 
 ```bash
 pip install -e '.[dev]'
-pytest              # 57 tests, no network or model needed
+pytest              # 75 tests, no network or API key needed
 ruff check src tests
 ```
 
-The scheduling engine, confirmation state machine, dedupe, and sanitizer are all
-tested without Ollama, signal-cli, or Google.
+The scheduling engine, confirmation state machine, dedupe, sanitizer, and the
+intent schema/narrowing layer are all tested without the Claude API, signal-cli,
+or Google — and without spending a cent.
 
 ## Scope
 

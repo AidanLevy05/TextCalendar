@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "signal-calendar-bot"
 version = "0.1.0"
-description = "Manage Google Calendar by texting Signal Note to Self. All inference local via Ollama."
+description = "Manage Google Calendar by texting Signal Note to Self, using Claude for language."
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
-    "httpx>=0.27",
+    "anthropic>=0.40",
     "google-api-python-client>=2.120",
     "google-auth>=2.29",
     "google-auth-oauthlib>=1.2",

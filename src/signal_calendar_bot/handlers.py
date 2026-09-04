@@ -24,7 +24,7 @@ from .config import Config
 from .confirm import Action
 from .formatting import clock, day_label, duration_label, relative_window, slot_label
 from .gcal.client import CalendarClient
-from .llm import OllamaClient
+from .llm import ClaudeClient
 from .models import (
     CalendarEvent,
     CreateIntent,
@@ -61,7 +61,7 @@ class Handlers:
         self,
         cfg: Config,
         calendar: CalendarClient,
-        llm: OllamaClient,
+        llm: ClaudeClient,
     ) -> None:
         self.cfg = cfg
         self.calendar = calendar

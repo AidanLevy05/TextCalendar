@@ -29,7 +29,7 @@ from .gcal.auth import ReauthRequired
 from .gcal.client import CalendarClient
 from .handlers import Handlers, Reply
 from .heartbeat import Heartbeat
-from .llm import LLMUnavailable, OllamaClient
+from .llm import ClaudeClient, LLMAuthError, LLMUnavailable
 from .logging_setup import new_correlation_id, set_correlation_id
 from .models import CreateIntent, DeleteIntent, MoveIntent, QueryIntent, UnknownIntent
 from .signal_client import IncomingMessage, SignalClient, SignalError
@@ -46,7 +46,7 @@ class Daemon:
         self.cfg = cfg
         self.store = Store(cfg.db_path)
         self.signal = SignalClient(cfg.signal)
-        self.llm = OllamaClient(cfg.ollama)
+        self.llm = ClaudeClient(cfg.anthropic)
         self.calendar = CalendarClient(cfg.google, cfg.general.tz)
         self.handlers = Handlers(cfg, self.calendar, self.llm)
         self.confirmations = ConfirmationManager(self.store, cfg.confirmation)
@@ -61,16 +61,18 @@ class Daemon:
         log.info(
             "starting",
             extra={
-                "model": self.cfg.ollama.model,
+                "model": self.cfg.anthropic.model,
+                "effort": self.cfg.anthropic.effort,
                 "timezone": self.cfg.general.timezone,
                 "confirm_ttl": self.cfg.confirmation.timeout_seconds,
             },
         )
 
-        if not self.llm.health():
+        healthy, detail = self.llm.health()
+        if not healthy:
             log.warning(
-                "ollama not reachable at startup; will retry per message",
-                extra={"host": self.cfg.ollama.host},
+                "Claude API not reachable at startup; will retry per message",
+                extra={"detail": detail},
             )
 
         self._start_sweeper()
@@ -198,9 +200,16 @@ class Daemon:
         now = datetime.now(UTC)
         try:
             intent = self.llm.parse_intent(text, now=now, tz=self.cfg.general.tz)
+        except LLMAuthError as exc:
+            log.error("anthropic auth failure", extra={"error": str(exc)})
+            self._reply(
+                "My Anthropic API key is missing or rejected. Fix it on the host "
+                "and I'll pick it up on the next message."
+            )
+            return
         except LLMUnavailable as exc:
-            log.error("ollama unavailable", extra={"error": str(exc)})
-            self._reply("Can't reach the local model right now. Try again in a moment.")
+            log.error("claude api unavailable", extra={"error": str(exc)})
+            self._reply("Can't reach the Claude API right now. Try again in a moment.")
             return
 
         try:
