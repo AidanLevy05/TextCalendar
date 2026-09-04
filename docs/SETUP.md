@@ -155,14 +155,18 @@ chmod 600 ~/.config/signal-calendar-bot/secrets.env
 EnvironmentFile=%h/.config/signal-calendar-bot/secrets.env
 ```
 
-**For running by hand in a shell**, either source that same file:
+**For running by hand in a shell**, `scripts/run_bot.sh` loads `secrets.env`
+itself, so it just works. Any other invocation (`python -m signal_calendar_bot
+run`, `doctor`) does not go through that script, so source the file into your
+shell first:
 
 ```bash
 set -a && . ~/.config/signal-calendar-bot/secrets.env && set +a
 ```
 
-…or, if you prefer the key-file route, drop the bare key (no `KEY=` prefix, no
-quotes) into the path your config names:
+**Or skip the sourcing entirely** — drop the bare key (no `KEY=` prefix, no
+quotes) into the path your config names, and every invocation picks it up with
+no environment setup at all:
 
 ```bash
 umask 077
