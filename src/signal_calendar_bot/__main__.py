@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -26,7 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("run", help="run the daemon")
-    sub.add_parser("doctor", help="check config, Ollama, Signal, and Google")
+    sub.add_parser("doctor", help="check config, Claude API, Signal, and Google")
     sub.add_parser("auth", help="run the one-time Google OAuth flow")
 
     purge = sub.add_parser("purge", help="delete every event tagged signal-bot")
@@ -145,27 +146,37 @@ def cmd_doctor(cfg: Config, config_path) -> int:
         mode = token.stat().st_mode & 0o777
         check("token permissions are 0600", mode == 0o600, oct(mode))
 
-    print("\n=== ollama ===")
-    from .llm import OllamaClient
+    print("\n=== claude api ===")
+    from .llm import ClaudeClient, LLMAuthError
 
-    llm = OllamaClient(cfg.ollama)
-    reachable = llm.health()
-    check("ollama reachable", reachable, cfg.ollama.host)
-    if reachable:
+    key = cfg.anthropic.resolve_api_key()
+    source = (
+        "ANTHROPIC_API_KEY env var"
+        if os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        else f"file {cfg.anthropic.api_key_path}"
+    )
+    check("api key found", key is not None, source if key else "not set — see docs/SETUP.md")
+    if key is not None:
+        check(
+            "api key looks well-formed",
+            key.startswith("sk-ant-"),
+            "starts with sk-ant-" if key.startswith("sk-ant-") else "unexpected prefix",
+        )
+        if cfg.anthropic.api_key_path.is_file():
+            mode = cfg.anthropic.api_key_path.stat().st_mode & 0o777
+            check("key file permissions are 0600", mode == 0o600, oct(mode))
         try:
-            import httpx
-
-            tags = httpx.get(f"{cfg.ollama.host.rstrip('/')}/api/tags", timeout=5).json()
-            names = {m["name"] for m in tags.get("models", [])}
-            check(
-                "configured model pulled",
-                cfg.ollama.model in names
-                or any(n.split(":")[0] == cfg.ollama.model.split(":")[0] for n in names),
-                f"{cfg.ollama.model}; available: {', '.join(sorted(names)) or 'none'}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            check("model list readable", False, str(exc))
-    llm.close()
+            llm = ClaudeClient(cfg.anthropic)
+            ok_model, detail = llm.health()
+            check(f"model {cfg.anthropic.model} reachable", ok_model, detail)
+            llm.close()
+        except LLMAuthError as exc:
+            check("claude client", False, str(exc)[:200])
+    check(
+        "effort configured",
+        True,
+        f"{cfg.anthropic.effort} (parsing), {cfg.anthropic.phrase_effort} (phrasing)",
+    )
 
     print("\n=== signal ===")
     from .signal_client import SignalClient

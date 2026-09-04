@@ -1,14 +1,31 @@
-"""Ollama client. The model's entire job lives here.
+"""Claude API client. The model's entire job lives here.
 
 Two calls, and only two:
 
-* `parse_intent` — text in, validated `ParsedIntent` out. On schema failure it
-  retries once with the validation error appended; on a second failure it
-  returns UNKNOWN and the user is asked to rephrase. It never gets a third try
-  and it never gets to emit anything that isn't in `models.py`.
-* `phrase` — facts in, one sentence out. Purely cosmetic; every fact it is given
-  was already computed by code, and a failure here degrades to the plain
-  fallback text rather than blocking the operation.
+* `parse_intent` — text in, validated `ParsedIntent` out. Structured outputs
+  guarantee the JSON is well-formed and matches the field schema; the strict
+  pydantic union in `models.py` then enforces the business rules on top (a
+  `create` needs a title, windows must be sane, and so on). On a rule failure it
+  retries once with the validation error appended, then gives up and returns
+  UNKNOWN so the user is asked to rephrase.
+* `phrase` — facts in, one sentence out. Purely cosmetic: every fact it is given
+  was already computed by code, so a failure here degrades to the plain fallback
+  text rather than blocking the operation. Runs at lower effort accordingly.
+
+Model-specific constraints that are not optional:
+
+* **No `temperature` / `top_p` / `top_k`.** Sonnet 5 rejects all three with a
+  400. Determinism comes from structured outputs and the strict schema, not from
+  a sampling knob.
+* **No `budget_tokens`.** Removed on this model class; depth is controlled by
+  `output_config.effort` instead.
+* **Thinking is left at its default (adaptive).** Explicitly disabling it has
+  known failure modes and buys nothing here.
+
+Prompt layout is chosen for cache stability: the system prompt is byte-identical
+on every request, and everything volatile (the current time, the user's message)
+goes in the user turn. Putting the clock in the system prompt would invalidate
+the cached prefix on literally every call.
 """
 
 from __future__ import annotations
@@ -16,16 +33,15 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-import httpx
-from pydantic import ValidationError
+import anthropic
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .config import OllamaConfig
+from .config import AnthropicConfig
 from .models import ParsedIntent, UnknownIntent, validate_intent
 
 log = logging.getLogger(__name__)
@@ -41,13 +57,13 @@ def _prompt_dir() -> Path:
         return Path(override).expanduser()
     return PACKAGE_PROMPT_DIR
 
-_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
-# Small models like to narrate before the JSON; take the outermost object.
-_OBJECT = re.compile(r"\{.*\}", re.S)
-
 
 class LLMUnavailable(RuntimeError):
-    """Ollama could not be reached or did not answer in time."""
+    """The API could not be reached, timed out, or rate-limited us."""
+
+
+class LLMAuthError(LLMUnavailable):
+    """The API key is missing, malformed, or rejected. Needs human action."""
 
 
 def _load_prompt(name: str) -> str:
@@ -57,111 +73,188 @@ def _load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _render(template: str, **values: str) -> str:
-    """Substitute {{name}} placeholders.
+class RawIntent(BaseModel):
+    """The exact shape the model is constrained to emit.
 
-    Deliberately not str.format: the intent prompt is full of literal JSON
-    braces in its examples, which format() would try to interpret.
+    Flat and fully optional by design. Structured outputs guarantee we get these
+    field names with these types; `validate_intent` then narrows this into the
+    strict per-intent union, which is where the real rules live. Splitting it
+    this way means a schema the model can always satisfy, without weakening the
+    validation that protects the calendar.
     """
-    for key, value in values.items():
-        template = template.replace("{{" + key + "}}", value)
-    return template
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Literal["create", "query", "move", "delete", "unknown"]
+    title: str | None = Field(default=None, description="Short event name")
+    duration_minutes: int | None = Field(
+        default=None, description="Only if the user stated a length"
+    )
+    location: str | None = Field(default=None, description="Only if a place was named")
+    attendees: list[str] | None = Field(default=None, description="Names mentioned")
+    exact_time: bool | None = Field(
+        default=None, description="True if the user named a specific start time"
+    )
+    window_start: str | None = Field(default=None, description="ISO-8601 with offset")
+    window_end: str | None = Field(default=None, description="ISO-8601 with offset")
+    subject: str | None = Field(default=None, description="For query: what was asked")
+    target_query: str | None = Field(
+        default=None, description="For move/delete: words identifying the event"
+    )
+    target_window_start: str | None = Field(default=None, description="ISO-8601 with offset")
+    target_window_end: str | None = Field(default=None, description="ISO-8601 with offset")
+    reason: str | None = Field(default=None, description="For unknown: what was unclear")
+
+    def to_intent_dict(self) -> dict[str, Any]:
+        """Drop unset fields so the strict union sees only what was supplied."""
+        return self.model_dump(exclude_none=True)
 
 
-def extract_json(raw: str) -> dict[str, Any]:
-    """Pull a JSON object out of a model response that may be wrapped in prose."""
-    candidate = raw.strip()
-    fenced = _FENCE.search(candidate)
-    if fenced:
-        candidate = fenced.group(1).strip()
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        match = _OBJECT.search(candidate)
-        if not match:
-            raise
-        parsed = json.loads(match.group(0))
-    if not isinstance(parsed, dict):
-        raise ValueError("model returned JSON that is not an object")
-    return parsed
+def _intent_schema() -> dict[str, Any]:
+    schema = RawIntent.model_json_schema()
+    schema["additionalProperties"] = False
+    return schema
 
 
-class OllamaClient:
-    def __init__(self, cfg: OllamaConfig) -> None:
+class ClaudeClient:
+    def __init__(self, cfg: AnthropicConfig) -> None:
         self.cfg = cfg
-        self._client = httpx.Client(
-            base_url=cfg.host.rstrip("/"), timeout=cfg.timeout_seconds
+        api_key = cfg.resolve_api_key()
+        if not api_key:
+            raise LLMAuthError(
+                "No Anthropic API key found. Set ANTHROPIC_API_KEY in the "
+                f"environment, or put the key in {cfg.api_key_path} (mode 0600)."
+            )
+        self._client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=cfg.timeout_seconds,
+            max_retries=cfg.max_retries,
         )
 
     def close(self) -> None:
-        self._client.close()
+        # The SDK manages its own connection pool; nothing to release explicitly.
+        pass
 
-    def health(self) -> bool:
+    def health(self) -> tuple[bool, str]:
+        """Check that the key works and the configured model is reachable.
+
+        Uses the Models API, which is cheap and does not run inference.
+        """
         try:
-            self._client.get("/api/tags", timeout=5.0).raise_for_status()
-            return True
-        except httpx.HTTPError:
-            return False
+            model = self._client.models.retrieve(self.cfg.model)
+        except anthropic.AuthenticationError:
+            return False, "API key rejected (401). Check ANTHROPIC_API_KEY."
+        except anthropic.PermissionDeniedError:
+            return False, "API key lacks permission for this model (403)."
+        except anthropic.NotFoundError:
+            return False, f"Model {self.cfg.model!r} not found for this account."
+        except anthropic.APIConnectionError as exc:
+            return False, f"Could not reach the API: {exc}"
+        except anthropic.APIStatusError as exc:
+            return False, f"API error {exc.status_code}: {exc}"
+        return True, getattr(model, "display_name", self.cfg.model)
 
-    def _generate(self, system: str, user: str, *, force_json: bool) -> str:
-        payload: dict[str, Any] = {
-            "model": self.cfg.model,
-            "system": system,
-            "prompt": user,
-            "stream": False,
-            "keep_alive": self.cfg.keep_alive,
-            "options": {
-                "temperature": self.cfg.temperature,
-                "num_ctx": self.cfg.num_ctx,
+    # -- plumbing ----------------------------------------------------------
+
+    def _call(
+        self,
+        *,
+        system: str,
+        user: str,
+        effort: str,
+        max_tokens: int,
+        output_format: dict[str, Any] | None = None,
+    ) -> str:
+        output_config: dict[str, Any] = {"effort": effort}
+        if output_format is not None:
+            output_config["format"] = output_format
+
+        try:
+            response = self._client.messages.create(
+                model=self.cfg.model,
+                max_tokens=max_tokens,
+                # Stable prefix, marked cacheable. Only pays off once the prompt
+                # exceeds the model's minimum cacheable length; harmless below it.
+                system=[
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[{"role": "user", "content": user}],
+                output_config=output_config,
+            )
+        except anthropic.AuthenticationError as exc:
+            raise LLMAuthError(f"Anthropic rejected the API key: {exc}") from exc
+        except anthropic.PermissionDeniedError as exc:
+            raise LLMAuthError(f"API key lacks permission: {exc}") from exc
+        except anthropic.RateLimitError as exc:
+            raise LLMUnavailable(f"rate limited: {exc}") from exc
+        except anthropic.APITimeoutError as exc:
+            raise LLMUnavailable(f"request timed out: {exc}") from exc
+        except anthropic.APIConnectionError as exc:
+            raise LLMUnavailable(f"could not reach the API: {exc}") from exc
+        except anthropic.APIStatusError as exc:
+            raise LLMUnavailable(f"API error {exc.status_code}: {exc}") from exc
+
+        if response.stop_reason == "refusal":
+            detail = getattr(response.stop_details, "category", None)
+            log.warning("model refused the request", extra={"category": detail})
+            raise LLMUnavailable(f"model declined the request (category={detail})")
+
+        log.debug(
+            "claude call",
+            extra={
+                "effort": effort,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "cache_read": getattr(response.usage, "cache_read_input_tokens", 0),
+                "stop_reason": response.stop_reason,
             },
-        }
-        if force_json:
-            payload["format"] = "json"
-        try:
-            response = self._client.post("/api/generate", json=payload)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise LLMUnavailable(f"ollama request failed: {exc}") from exc
-        return response.json().get("response", "")
+        )
+        return "".join(b.text for b in response.content if b.type == "text")
 
     # -- the only two model calls in the project ---------------------------
 
     def parse_intent(self, message: str, *, now: datetime, tz: ZoneInfo) -> ParsedIntent:
         """Turn a message into a validated intent. Never raises on bad model output."""
         local_now = now.astimezone(tz)
-        system = _render(
-            _load_prompt("intent_system.md"),
-            now_local=local_now.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            timezone=str(tz),
-            today_name=local_now.strftime("%A"),
-            today_date=local_now.strftime("%Y-%m-%d"),
+        system = _load_prompt("intent_system.md")
+        context = (
+            f"CURRENT TIME: {local_now.strftime('%Y-%m-%dT%H:%M:%S%z')}\n"
+            f"TIMEZONE: {tz}\n"
+            f"TODAY IS: {local_now.strftime('%A')}, {local_now.strftime('%Y-%m-%d')}\n"
         )
+        schema = {"type": "json_schema", "schema": _intent_schema()}
 
-        attempt_prompt = message
+        user = f"{context}\nMESSAGE:\n{message}"
         last_error = ""
         for attempt in (1, 2):
-            raw = self._generate(system, attempt_prompt, force_json=True)
-            log.debug("model intent output", extra={"attempt": attempt, "raw": raw[:1000]})
+            raw = self._call(
+                system=system,
+                user=user,
+                effort=self.cfg.effort,
+                max_tokens=self.cfg.max_tokens,
+                output_format=schema,
+            )
             try:
-                intent = validate_intent(extract_json(raw))
+                payload = RawIntent.model_validate_json(raw)
+                intent = validate_intent(payload.to_intent_dict())
             except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                 last_error = str(exc)[:600]
                 log.warning(
                     "intent validation failed",
                     extra={"attempt": attempt, "error": last_error},
                 )
-                # Retry once with the validation error appended, per the spec.
-                attempt_prompt = (
-                    f"{message}\n\n"
-                    f"Your previous answer was rejected by the schema validator:\n"
-                    f"{last_error}\n"
-                    f"Return corrected JSON only."
+                # Retry once with the validation error appended.
+                user = (
+                    f"{context}\nMESSAGE:\n{message}\n\n"
+                    f"Your previous answer was rejected by the validator:\n{last_error}\n"
+                    "Return corrected JSON."
                 )
                 continue
-            log.info(
-                "intent parsed",
-                extra={"intent": intent.intent.value, "attempt": attempt},
-            )
+            log.info("intent parsed", extra={"intent": intent.intent.value, "attempt": attempt})
             return intent
 
         log.error("intent unparseable after retry", extra={"error": last_error})
@@ -170,8 +263,12 @@ class OllamaClient:
     def phrase(self, facts: str, *, fallback: str) -> str:
         """Phrase pre-computed facts. Degrades to `fallback` on any failure."""
         try:
-            system = _render(_load_prompt("phrase_system.md"), facts=facts)
-            text = self._generate(system, "Write the reply.", force_json=False).strip()
+            text = self._call(
+                system=_load_prompt("phrase_system.md"),
+                user=f"FACTS:\n{facts}\n\nWrite the reply.",
+                effort=self.cfg.phrase_effort,
+                max_tokens=self.cfg.phrase_max_tokens,
+            ).strip()
         except (LLMUnavailable, FileNotFoundError, OSError) as exc:
             log.warning("phrasing failed, using fallback", extra={"error": str(exc)})
             return fallback

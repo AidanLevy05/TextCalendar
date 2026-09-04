@@ -6,7 +6,7 @@
 #   chmod 600 config.toml
 #
 # Every value here can be overridden by an environment variable named
-# SCB_<SECTION>_<KEY> (uppercase), e.g. SCB_OLLAMA_MODEL=qwen3:4b.
+# SCB_<SECTION>_<KEY> (uppercase), e.g. SCB_ANTHROPIC_EFFORT=high.
 # Nothing in the codebase is hardcoded to a particular machine.
 # ---------------------------------------------------------------------------
 
@@ -42,17 +42,31 @@ allowed_senders = ["+15555550123"]
 # Only process Note to Self (message where source == destination == account).
 note_to_self_only = true
 
-[ollama]
-host = "http://127.0.0.1:11434"
-# Swap this one value to move between machines. 8GB VRAM (RTX 4060) fits
-# qwen3:8b comfortably; 6GB (RTX 2060) wants qwen3:4b or llama3.1:8b-q4.
-model = "qwen3:8b"
-num_ctx = 8192
-temperature = 0.0
-# Seconds to wait on a generation before giving up.
-timeout_seconds = 90
-# Keep the model resident. Mirrors OLLAMA_KEEP_ALIVE=-1 per request.
-keep_alive = "-1"
+[anthropic]
+# The API key is NOT stored here. It comes from the ANTHROPIC_API_KEY
+# environment variable, or failing that from api_key_file below.
+# See docs/SETUP.md part 2.
+model = "claude-sonnet-5"
+
+# Thinking depth / token spend: low | medium | high | xhigh | max.
+# Used for intent parsing — the one call where being wrong has a cost.
+effort = "medium"
+
+# Phrasing is cosmetic (every fact is already computed by code), so it runs
+# cheaper. Raise it only if the replies read badly.
+phrase_effort = "low"
+
+max_tokens = 2048
+phrase_max_tokens = 512
+timeout_seconds = 60
+max_retries = 2
+
+# Fallback if ANTHROPIC_API_KEY is not in the environment. A file containing
+# nothing but the key. Must be mode 0600.
+api_key_file = "~/.config/signal-calendar-bot/anthropic_api_key"
+
+# NOTE: there is deliberately no `temperature` setting. Claude Sonnet 5 rejects
+# temperature/top_p/top_k with a 400 error.
 
 [google]
 # Path to the OAuth *client secret* JSON you download from Google Cloud.

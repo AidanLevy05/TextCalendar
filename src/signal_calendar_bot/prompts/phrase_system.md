@@ -16,5 +16,4 @@ Rules:
   say to.
 - No markdown.
 
-FACTS:
-{{facts}}
+The facts you must work from are given in the user message.

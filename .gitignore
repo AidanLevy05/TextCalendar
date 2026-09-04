@@ -29,6 +29,16 @@ service-account*.json
 *-service-account.json
 gcp-*.json
 
+# Anthropic / Claude API key. Never in the repo — env var or a 0600 file.
+anthropic_api_key
+anthropic_api_key*
+.anthropic/
+anthropic.key
+*api_key*
+*apikey*
+*_key.txt
+sk-ant-*
+
 # Generic key / certificate material
 *.pem
 *.key

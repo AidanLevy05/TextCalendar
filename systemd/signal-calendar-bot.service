@@ -16,6 +16,9 @@ Requires=signal-cli.service
 Type=simple
 WorkingDirectory=%h/TextCalendar
 Environment=SCB_CONFIG=%h/.config/signal-calendar-bot/config.toml
+# The Anthropic API key lives here, NOT in config.toml and NOT in this unit.
+# Create it with:  echo 'ANTHROPIC_API_KEY=sk-ant-...' > secrets.env && chmod 600 secrets.env
+EnvironmentFile=%h/.config/signal-calendar-bot/secrets.env
 ExecStart=%h/TextCalendar/.venv/bin/python -m signal_calendar_bot run
 Restart=always
 RestartSec=5

@@ -3,7 +3,7 @@
 The LLM hands over a window and a duration. Everything from there — merging busy
 blocks, applying buffers, honoring day bounds and protected recurring blocks,
 picking candidates — happens here, deterministically, and is unit-testable
-without Ollama or Google running.
+without the Claude API or Google running.
 """
 
 from __future__ import annotations
